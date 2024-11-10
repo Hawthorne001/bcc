@@ -557,7 +557,7 @@ Type TCTranslator Extends TTranslator
 					End If
 				End If
 			End If
-			If TFunctionPtrType( ty) Return "(&brl_blitz_NullFunctionError)" ' todo ??
+			If TFunctionPtrType( ty) Return Bra(TransType(ty, "*")) + "(&brl_blitz_NullFunctionError)"
 			If TEnumType( ty ) Then
 				If TEnumType( ty ).decl.isFlags Then
 					Return "0"
@@ -569,14 +569,18 @@ Type TCTranslator Extends TTranslator
 		InternalErr "TCTranslator.TransValue"
 	End Method
 	
-	Method TransArgs$( args:TExpr[],decl:TFuncDecl, objParam:String = Null )
+	Method TransArgs$( args:TExpr[],decl:TFuncDecl, objParam:String = Null, objectNew:Int = False )
 'If decl.ident="AddS" DebugStop
 
 		Local t$
 		If objParam And (decl.IsMethod() Or decl.isCtor()) And ((Not decl.IsExtern()) Or (decl.IsExtern() And TClassDecl(decl.scope) And Not TClassDecl(decl.scope).IsStruct())) Then
 			' object cast to match param type
-			If TClassDecl(decl.scope) Then
-				t :+ Bra(TransObject(TClassDecl(decl.scope).GetLatestFuncDecl(decl).scope, TClassDecl(decl.scope).IsStruct()))
+			If objectNew Then
+				t :+ Bra("BBClass *")
+			Else
+				If TClassDecl(decl.scope) Then
+					t :+ Bra(TransObject(TClassDecl(decl.scope).GetLatestFuncDecl(decl).scope, TClassDecl(decl.scope).IsStruct()))
+				End If
 			End If
 			t:+ objParam
 		End If
@@ -825,7 +829,7 @@ t:+"NULLNULLNULL"
 		Local initTrans:String
 		If outputInit Then
 			Local cast:String
-			If TObjectType(decl.ty) And Not TObjectType(decl.ty).classDecl.IsStruct() Then
+			If (TObjectType(decl.ty) And Not TObjectType(decl.ty).classDecl.IsStruct()) Or TFunctionPtrType(decl.ty) Then
 				cast = Bra(TransType(decl.ty, ""))
 			End If
 		
@@ -1850,12 +1854,12 @@ t:+"NULLNULLNULL"
 				End If
 			Else
 				If ClassHasObjectField(expr.classDecl) And Not expr.classDecl.IsStruct() Then
-					t = "_" + ctorMunged + "_ObjectNew" + TransArgs( expr.args,expr.ctor, "&" + expr.classDecl.actual.munged )
+					t = "_" + ctorMunged + "_ObjectNew" + TransArgs( expr.args,expr.ctor, "&" + expr.classDecl.actual.munged, True )
 				Else
 					If expr.classDecl.IsStruct() Then
 						t = ctorMunged + "_ObjectNew" + TransArgs( expr.args,expr.ctor)
 					Else
-						t = "_" + ctorMunged + "_ObjectNew" + TransArgs( expr.args,expr.ctor, "&" + expr.classDecl.actual.munged)
+						t = "_" + ctorMunged + "_ObjectNew" + TransArgs( expr.args,expr.ctor, "&" + expr.classDecl.actual.munged, True)
 					End If
 				End If
 			End If
@@ -1869,8 +1873,7 @@ t:+"NULLNULLNULL"
 
 		If expr.expr.length = 1 Then
 			If TObjectType(expr.ty) And TObjectType(expr.ty).classdecl.IsStruct() And Not IsPointerType(expr.ty) Then
-				Return "bbArrayNew1DStruct" + Bra(TransArrayType(expr.ty) + ", " + expr.expr[0].Trans() + ", sizeof" + ..
-						Bra(TransObject(TObjectType(expr.ty).classdecl)) + ", _" + TObjectType(expr.ty).classdecl.munged + "_New")
+				Return "bbArrayNew1DStruct_" + TObjectType(expr.ty).classdecl.munged + Bra(expr.expr[0].Trans())
 			Else
 				Return "bbArrayNew1D" + Bra(TransArrayType(expr.ty) + ", " + expr.expr[0].Trans())
 			End If
@@ -1966,7 +1969,7 @@ t:+"NULLNULLNULL"
 
 			If TArrayType(src) Then
 				If TArrayType(src).isStatic Then
-					Return Bra("&" + Bra(t))
+					Return Bra(t)
 				Else
 					Return Bra(Bra(TransType(dst, "")) + "BBARRAYDATA(" + t + ",1)")
 				End If
@@ -2422,12 +2425,12 @@ t:+"NULLNULLNULL"
 					' if we are casting to Object[], don't actually cast.
 					Return Bra(t)
 				Else
-					Return "bbArrayCastFromObject" + Bra(t + "," + TransArrayType(TArrayType( dst ).elemType))
+					Return "bbArrayCastFromObject" + Bra("(BBOBJECT)" + t + "," + TransArrayType(TArrayType( dst ).elemType))
 				End If
 			End If
 			
 			If TObjectType( src) And (TObjectType( src ).classDecl.ident = "___Array" Or TObjectType( src ).classDecl.ident = "Object") Then
-				Return "bbArrayCastFromObject" + Bra(t + "," + TransArrayType(TArrayType( dst ).elemType))
+				Return "bbArrayCastFromObject" + Bra("(BBOBJECT)" + t + "," + TransArrayType(TArrayType( dst ).elemType))
 			End If
 		Else If TObjectType( dst )
 			'If TArrayType( src ) Return Bra("(BBOBJECT)"+t)
@@ -2717,8 +2720,7 @@ t:+"NULLNULLNULL"
 		If TArrayType(expr.exprType) Then
 			Local ty:TType = TArrayType(expr.exprType).elemType
 			If TObjectType(ty) And TObjectType(ty).classDecl.IsStruct() Then
-				Return "bbArraySliceStruct" + Bra(TransArrayType(ty) + "," + t_expr + "," + t_args + ", sizeof" + ..
-						Bra(TransObject(TObjectType(ty).classdecl)) + ", _" + TObjectType(ty).classdecl.munged + "_New")
+				Return "bbArraySliceStruct_" + TObjectType(ty).classdecl.munged + Bra( t_expr + "," + t_args )
 			Else
 				Return "bbArraySlice" + Bra(TransArrayType(ty) + "," + t_expr + "," + t_args)
 			End If
@@ -3948,9 +3950,21 @@ End Rem
 		Emit "unsigned int instance_size;"
 		Emit "void      (*ctor)( BBOBJECT o );"
 		Emit "void      (*dtor)( BBOBJECT o );"
-		Emit "BBSTRING  (*ToString)( BBOBJECT x );"
-		Emit "int       (*Compare)( BBOBJECT x,BBOBJECT y );"
-		Emit "BBOBJECT  (*SendMessage)( BBOBJECT o,BBOBJECT m,BBOBJECT s );"
+		If classHierarchyHasFunction(classDecl, "ToString") Then
+			Emit "BBSTRING  (*ToString)( struct " + classidForFunction(classDecl, "ToString") + "_obj* x );"
+		Else
+			Emit "BBSTRING  (*ToString)( BBOBJECT x );"
+		End If
+		If classHierarchyHasFunction(classDecl, "Compare") Then
+			Emit "BBINT     (*Compare)( struct " + classidForFunction(classDecl, "Compare") + "_obj* x, BBOBJECT y );"
+		Else
+			Emit "int       (*Compare)( BBOBJECT x,BBOBJECT y );"
+		End If
+		If classHierarchyHasFunction(classDecl, "SendMessage") Then
+			Emit "BBOBJECT  (*SendMessage)( struct " + classidForFunction(classDecl, "SendMessage") + "_obj* x, BBOBJECT m, BBOBJECT s );"
+		Else
+			Emit "BBOBJECT  (*SendMessage)( BBOBJECT o,BBOBJECT m,BBOBJECT s );"
+		End If
 		Emit "BBINTERFACETABLE itable;"
 		Emit "void*     extra;"
 		Emit "unsigned int obj_size;"
@@ -4128,6 +4142,10 @@ End Rem
 		Emit "};"
 
 		EmitClassGlobalsProto(classDecl);
+
+		' struct arrays
+		Emit "BBArray *bbArrayNew1DStruct_" + classDecl.munged + "(int length);"
+		Emit "BBArray *bbArraySliceStruct_" + classDecl.munged + "(BBArray *inarr, int beg, int end);"
 
 	End Method
 
@@ -4600,6 +4618,11 @@ End Rem
 	
 			reserved = ",New,Delete,ToString,Compare,SendMessage,_reserved1_,_reserved2_,_reserved3_,".ToLower()
 
+			If (classDecl.attrs & CLASS_STRUCT) Then
+				Emit "BBARRAYNEW1DSTRUCT_FUNC" + Bra(classid + "," + classid + ", _" + classid + "_New" + ", " + EnQuote("@" + classDecl.ident))
+				Emit "BBARRAYSLICESTRUCT_FUNC" + Bra(classid + "," + classid + ", _" + classid + "_New" + ", " + EnQuote("@" + classDecl.ident))
+			End If
+
 		End If
 
 			
@@ -4681,6 +4704,8 @@ End Rem
 						For Local func:TFuncDecl = EachIn ifc.GetImplementedFuncs()
 						
 							If func.IsMethod() Then
+
+								Local cast:String = Bra( func.munged + "_m" )
 							
 								For Local f:TFuncDecl = EachIn fdecls
 
@@ -4695,7 +4720,7 @@ End Rem
 										
 										If Not dups.ValueForKey(id) Then
 
-											Emit "_" + f.munged + ","
+											Emit cast + "_" + f.munged + ","
 										
 											dups.Insert(id, "")
 										End If
@@ -4737,19 +4762,19 @@ End Rem
 			End If
 	
 			If classHierarchyHasFunction(classDecl, "ToString") Then
-				Emit "(BBSTRING (*)(BBOBJECT))_" + classidForFunction(classDecl, "ToString") + "_ToString,"
+				Emit "_" + classidForFunction(classDecl, "ToString") + "_ToString,"
 			Else
 				Emit "bbObjectToString,"
 			End If
 	
 			If classHierarchyHasFunction(classDecl, "Compare") Then
-				Emit "(int (*)(BBOBJECT, BBOBJECT))_" + classidForFunction(classDecl, "Compare") + "_Compare,"
+				Emit "_" + classidForFunction(classDecl, "Compare") + "_Compare,"
 			Else
 				Emit "bbObjectCompare,"
 			End If
 	
 			If classHierarchyHasFunction(classDecl, "SendMessage") Then
-				Emit "(BBOBJECT (*)(BBOBJECT, BBOBJECT, BBOBJECT))_" + classidForFunction(classDecl, "SendMessage") + "_SendMessage,"
+				Emit "_" + classidForFunction(classDecl, "SendMessage") + "_SendMessage,"
 			Else
 				Emit "bbObjectSendMessage,"
 			End If
